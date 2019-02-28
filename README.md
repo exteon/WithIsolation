@@ -50,6 +50,10 @@ case class or to the test methods (function test*):
   isolated process. Each isolated function is run in a separate process spawned
   just for it. This is still done in sequential order.
   
+- Implement the `isolationSetup()` function if needed: this function is run in
+the spawned process before the test function(s), so you can initialize the 
+isolated process state in this function.
+  
 ## Notes
 
 The spawned processes are terminated as the test or test class is done running.
