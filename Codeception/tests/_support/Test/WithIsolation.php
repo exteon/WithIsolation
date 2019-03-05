@@ -18,6 +18,7 @@
 		private static $isIsolated_test=[];
 		private $isolatedName;
 		private static $amIsolated=false;
+		protected $knownThrowables=[];
 		
 		/**
 		 * Override this to provide initialisation code for the isolated container 
@@ -77,8 +78,8 @@
 			$class=get_called_class();
 			self::$isIsolated_test[$class]=self::doRunIsolatedTest($class);
 			if(self::$isIsolated_test[$class]){
-				static::startRunner();
-				static::runIsolated('isolationSetup');
+				$this->startRunner();
+				$this->runIsolated('isolationSetup');
 			}
 		}
 		
@@ -97,14 +98,23 @@
 			if(array_key_exists($class,self::$runners)){
 				throw new \Codeception\Exception\Fail('A runner is already started');
 			}
-			
+			$this->knownThrowables=[];
+			foreach(get_declared_classes() as $dclass){
+ 			   if(
+					is_a($dclass,'Error',true) ||
+					is_a($dclass,'Exception',true)
+ 			   	){
+					$this->knownThrowables[]=$dclass;
+				}
+			}
 			$runner=[
 				'isStarted'=>false,
 				'commandPipe'=>null,
 				'commandPipeFile'=>null,
 				'resultPipe'=>null,
 				'resultPipeFile'=>null,
-				'pid'=>null
+				'pid'=>null,
+				'isFailed'=>false
 			];
 			self::$runners[$class]=&$runner;
 			$id=uniqid();
@@ -119,48 +129,19 @@
 			$pid=pcntl_fork();
 			if(!$pid){
 				self::$amIsolated=true;
-				do {
-					try {
-						$command_s=file_get_contents($runner['commandPipeFile']);
-						if(!$command_s){
-							break;
-						}
-						$command=unserialize($command_s);
-						$resultPipe=fopen($runner['resultPipeFile'],'w');
-						switch($command['command']){
-							case 'exit':
-								$result=[
-									'type'=>'ok'
-								];
-								fwrite($resultPipe,serialize($result));
-								fclose($resultPipe);
-								break 2;
-							case 'run':
-								$toCall=$command['what'];
-								$res=call_user_func_array([$this,$toCall],$command['args']);
-								$result=[
-									'type'=>'ok',
-									'result'=>$res
-								];
-								break;
-						}
-						fwrite($resultPipe,serialize($result));
-						fclose($resultPipe);
-					} catch (\Throwable $t) {
-						self::flattenThrowableBacktrace($t);
+				register_shutdown_function(function() use (&$runner) {
+					$error=error_get_last();
+					if(in_array($error['type'], [E_ERROR, E_COMPILE_ERROR, E_CORE_ERROR])){
 						$result=[
-							'type'=>'exception',
-							'exception'=>serialize($t)
+							'type'=>'fatal',
+							'error'=>$error
 						];
-						fwrite($resultPipe,serialize($result));
-						fclose($resultPipe);
+						fwrite($runner['resultPipe'],serialize($result));
+						fclose($runner['resultPipe']);
+						exit();
 					}
-				} while(true);
-				/**
-				 * Problem: This triggers Codeception's shutdown handler which tries
-				 * to output some error about an incomplete run.
-				 */
-				die();
+				});
+				$this->runner();
 			}
 			elseif($pid===-1){
 				throw new \Codeception\Exception\Fail('Could not start runner');
@@ -171,12 +152,63 @@
 			}
 		}
 		
+		protected function runner(){
+			$class=get_called_class();
+			$runner=&self::$runners[$class];
+			do {
+				try {
+					$command_s=file_get_contents($runner['commandPipeFile']);
+					if(!$command_s){
+						break;
+					}
+					$command=unserialize($command_s);
+					$runner['resultPipe']=fopen($runner['resultPipeFile'],'w');
+					switch($command['command']){
+						case 'exit':
+							$result=[
+								'type'=>'ok'
+							];
+							fwrite($runner['resultPipe'],serialize($result));
+							fclose($runner['resultPipe']);
+							break 2;
+						case 'run':
+							$toCall=$command['what'];
+							$res=call_user_func_array([$this,$toCall],$command['args']);
+							$result=[
+								'type'=>'ok',
+								'result'=>$res
+							];
+							break;
+					}
+					fwrite($runner['resultPipe'],serialize($result));
+					fclose($runner['resultPipe']);
+				} catch (\Throwable $t) {
+					$flat=$this->flattenThrowable($t);
+					$result=[
+						'type'=>'exception',
+						'exception'=>$flat
+					];
+					fwrite($runner['resultPipe'],serialize($result));
+					fclose($runner['resultPipe']);
+				}
+			} while(true);
+			/**
+			 * Problem: This triggers Codeception's shutdown handler which tries
+			 * to output some error about an incomplete run.
+			 */
+			die();
+		}
+		
 		protected function runIsolated($callable,$args=[]){
 			$class=get_called_class();
 			if(!array_key_exists($class,self::$runners)){
 				throw new \Codeception\Exception\Fail('A runner is not started');
 			}
 			$runner=&self::$runners[$class];
+			
+			if($runner['isFailed']){
+				throw new \Codeception\Exception\Fail('Runner died with a previous command');
+			}
 			
 			$command=[
 				'command'=>'run',
@@ -190,14 +222,20 @@
 				$this->killRunner();
 				throw new \Codeception\Exception\Fail('Could not retrieve runner results');
 			}
-			$runner['commandPipe']=fopen($runner['commandPipeFile'],'w');
 			$result=unserialize($result_s);
+			if($result['type']!=='fatal'){
+				$runner['commandPipe']=fopen($runner['commandPipeFile'],'w');
+			}
 			switch($result['type']){
 				case 'exception':
-					$exception=unserialize($result['exception']);
+					$exception=static::unflattenThrowable($result['exception']);
 					throw $exception;
 				case 'ok':
 					return $result['result'];
+				case 'fatal':
+					$runner['isFailed']=true;
+					$exception=new \RuntimeException('Fatal error in runner: '.$result['error']['message'].' in '.$result['error']['file'].':'.$result['error']['line']);
+					throw $exception;
 			}
 		}
 		
@@ -267,14 +305,8 @@
 		/**
 		 * Throwables cannot be serialized if they have callbacks in args. So
 		 * flatten those callbacks.
-		 * 
-		 * @author https://stackoverflow.com/users/181664/artur-bodera
-		 * @see https://gist.github.com/Thinkscape/805ba8b91cdce6bcaf7c
 		 */
-		private static function flattenThrowableBacktrace(\Throwable $throwable) {
-			$refClass=($throwable instanceof \Error)?'Error':'Exception';
-	        $traceProperty = (new \ReflectionClass('Error'))->getProperty('trace');
-	        $traceProperty->setAccessible(true);
+		private function flattenThrowable($throwable) {
 	        $flatten = function(&$value, $key) {
 	            if ($value instanceof \Closure) {
 	                $closureReflection = new \ReflectionFunction($value);
@@ -283,20 +315,104 @@
 	                    $closureReflection->getFileName(),
 	                    $closureReflection->getStartLine()
 	                );
-	            } elseif (is_object($value)) {
-	                $value = sprintf('object(%s)', get_class($value));
-	            } elseif (is_resource($value)) {
-	                $value = sprintf('resource(%s)', get_resource_type($value));
+	            }
+	            elseif(!is_array($value)){
+	            	try{
+	            		serialize($value);
+	            	} catch (\Throwable $e){
+	            		$value='(Unserializable '.get_class($value).')';
+	            	}
 	            }
 	        };
-	        do {
-	            $trace = $traceProperty->getValue($throwable);
-	            foreach($trace as &$call) {
-	                array_walk_recursive($call['args'], $flatten);
-	            }
-	            $traceProperty->setValue($throwable, $trace);
-	        } while($throwable = $throwable->getPrevious());
-	        $traceProperty->setAccessible(false);
+	        
+	        $struct=[];
+			
+			$class=get_class($throwable);
+			$struct['class']=$class;
+			$refClass=new \ReflectionClass($class);
+			foreach($refClass->getProperties() as $refProperty){
+				$refProperty->setAccessible(true);
+				$value=$refProperty->getValue($throwable);
+				$refProperty->setAccessible(false);
+				if(is_array($value)){
+					array_walk_recursive($value, $flatten);
+				}
+				$struct['data'][$refProperty->getName()]=$value;
+			}
+			$privateClass=get_parent_class($class);
+			while($privateClass){
+				$refPrivateClass=new \ReflectionClass($privateClass);
+				foreach($refPrivateClass->getProperties(\ReflectionProperty::IS_PRIVATE) as $refProperty){
+					$refProperty->setAccessible(true);
+					$value=$refProperty->getValue($throwable);
+					$refProperty->setAccessible(false);
+					if(is_array($value)){
+						array_walk_recursive($value, $flatten);
+					}
+					$struct['data'][$refProperty->getName()]=$value;
+				}
+				$privateClass=get_parent_class($privateClass);
+			}
+			$refClass=($throwable instanceof \Error)?'Error':'Exception';
+	        $previousProperty = (new \ReflectionClass($refClass))->getProperty('previous');
+	        $previousProperty->setAccessible(true);
+	        $previous=$previousProperty->getValue($throwable);
+	        $previousProperty->setAccessible(false);
+	        if($previous){
+	        	$struct['previous']=$this->flattenThrowable($previous);
+	        }
+	        return $struct;
 	    }
-		
+	    
+	    private static function unflattenThrowable ($struct){
+	    	$class=$struct['class'];
+	    	do {
+	    		if(class_exists($class)){
+	    			break;
+	    		}
+	    		$class=get_parent_class($class);
+	    	} while ($class);
+	    	if(
+	    		!$class ||
+	    		(
+	    			!is_a($class,'Exception',true) &&
+	    			!is_a($class,'Error',true)
+	    		)
+	    	){
+	    		$throwable=new \RuntimeException('Unknown error: cannot unflatten original error');
+	    	} else {
+		    	$throwable=new $class();
+	    	}
+			$refClass=new \ReflectionClass($class);
+			foreach($refClass->getProperties() as $refProperty){
+				$name=$refProperty->getName();
+				if($name!=='previous'){
+					$refProperty->setAccessible(true);
+					$refProperty->setValue($throwable,$struct['data'][$refProperty->getName()]);
+					$refProperty->setAccessible(false);
+				}
+			}
+			$privateClass=get_parent_class($class);
+			while($privateClass){
+				$refPrivateClass=new \ReflectionClass($privateClass);
+				foreach($refPrivateClass->getProperties(\ReflectionProperty::IS_PRIVATE) as $refProperty){
+					$name=$refProperty->getName();
+					if($name!=='previous'){
+						$refProperty->setAccessible(true);
+						$refProperty->setValue($throwable,$struct['data'][$refProperty->getName()]);
+						$refProperty->setAccessible(false);
+					}
+				}
+				$privateClass=get_parent_class($privateClass);
+			}
+			if($struct['previous']){
+				$previous=static::unflattenThrowable($struct['previous']);
+				$refClass=($throwable instanceof \Error)?'Error':'Exception';
+		        $previousProperty = (new \ReflectionClass($refClass))->getProperty('previous');
+		        $previousProperty->setAccessible(true);
+		        $previousProperty->setValue($throwable,$previous);
+	       		$previousProperty->setAccessible(false);
+			}
+	        return $throwable;
+		}
 	}
