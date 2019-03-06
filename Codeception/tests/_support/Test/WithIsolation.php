@@ -332,29 +332,54 @@
 	        return isset($annotations['class']['runIsolated']);
 		}
 		
+		private function flattenVar($var){
+			if(is_a($var,'Closure')){
+				$closureReflection = new \ReflectionFunction($value);
+				return sprintf(
+					'(Closure at %s:%s)',
+					$closureReflection->getFileName(),
+					$closureReflection->getStartLine()
+				);
+			}
+			if(is_a($var,'Throwable')){
+				return self::flattenThrowable($var);
+			}
+			if(is_array($var)){
+				foreach($var as &$value){
+					$value=self::flattenVar($value);
+				}
+				unset($value);
+				return $var;
+			}
+			if(is_object($var)){
+				try {
+					serialize($var);
+				} catch (\Throwable $e){
+					return '(Unserializable '.get_class($var).')';
+				}
+			}
+			return $var;
+		}
+		
+		private function unflattenVar($var){
+			if(is_a($var,'Test\FlattenedThrowable')){
+				return self::unflattenThrowable($var);
+			}
+			if(is_array($var)){
+				foreach($var as &$value){
+					$value=self::unflattenVar($value);
+				}
+				unset($value);
+				return $var;
+			}
+			return $var;
+		}
+		
 		/**
 		 * Throwables cannot be serialized if they have callbacks in args. So
 		 * flatten those callbacks.
 		 */
 		private function flattenThrowable($throwable) {
-	        $flatten = function(&$value, $key) {
-	            if ($value instanceof \Closure) {
-	                $closureReflection = new \ReflectionFunction($value);
-	                $value = sprintf(
-	                    '(Closure at %s:%s)',
-	                    $closureReflection->getFileName(),
-	                    $closureReflection->getStartLine()
-	                );
-	            }
-	            elseif(!is_array($value)){
-	            	try{
-	            		serialize($value);
-	            	} catch (\Throwable $e){
-	            		$value='(Unserializable '.get_class($value).')';
-	            	}
-	            }
-	        };
-	        
 	        $struct=new FlattenedThrowable;
 			
 			$class=get_class($throwable);
@@ -364,12 +389,7 @@
 				$refProperty->setAccessible(true);
 				$value=$refProperty->getValue($throwable);
 				$refProperty->setAccessible(false);
-				if(is_array($value)){
-					array_walk_recursive($value, $flatten);
-				}
-				elseif(is_a($value,'Throwable')){
-					$value=self::flattenThrowable($value);
-				}
+				$value=self::flattenVar($value);
 				$struct->data[$refProperty->getName()]=$value;
 			}
 			$privateClass=get_parent_class($class);
@@ -379,24 +399,11 @@
 					$refProperty->setAccessible(true);
 					$value=$refProperty->getValue($throwable);
 					$refProperty->setAccessible(false);
-					if(is_array($value)){
-						array_walk_recursive($value, $flatten);
-					}
-					elseif(is_a($value,'Throwable')){
-						$value=self::flattenThrowable($value);
-					}
+					$value=self::flattenVar($value);
 					$struct->data[$refProperty->getName()]=$value;
 				}
 				$privateClass=get_parent_class($privateClass);
 			}
-			$refClass=($throwable instanceof \Error)?'Error':'Exception';
-	        $previousProperty = (new \ReflectionClass($refClass))->getProperty('previous');
-	        $previousProperty->setAccessible(true);
-	        $previous=$previousProperty->getValue($throwable);
-	        $previousProperty->setAccessible(false);
-	        if($previous){
-	        	$struct->previous=self::flattenThrowable($previous);
-	        }
 	        return $struct;
 	    }
 	    
@@ -410,10 +417,7 @@
 	    	} while ($class);
 	    	if(
 	    		!$class ||
-	    		(
-	    			!is_a($class,'Exception',true) &&
-	    			!is_a($class,'Error',true)
-	    		)
+	    		!is_a($class,'Throwable',true)
 	    	){
 	    		$throwable=new \RuntimeException();
 				$refClass=new \ReflectionClass('RuntimeException');
@@ -424,9 +428,7 @@
 			foreach($refClass->getProperties() as $refProperty){
 				$name=$refProperty->getName();
 				$value=$struct->data[$name];
-				if(is_a($value,'Test\FlattenedThrowable')){
-					$value=self::unflattenThrowable($value);
-				}
+				$value=self::unflattenVar($value);
 				$refProperty->setAccessible(true);
 				$refProperty->setValue($throwable,$value);
 				$refProperty->setAccessible(false);
@@ -437,9 +439,7 @@
 				foreach($refPrivateClass->getProperties(\ReflectionProperty::IS_PRIVATE) as $refProperty){
 					$name=$refProperty->getName();
 					$value=$struct->data[$name];
-					if(is_a($value,'Test\FlattenedThrowable')){
-						$value=self::unflattenThrowable($value);
-					}
+					$value=self::unflattenVar($value);
 					$refProperty->setAccessible(true);
 					$refProperty->setValue($throwable,$value);
 					$refProperty->setAccessible(false);
@@ -457,5 +457,4 @@
 	class FlattenedThrowable{
 		public $class;
 		public $data;
-		public $previous;
 	}
