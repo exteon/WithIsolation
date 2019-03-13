@@ -1,68 +1,39 @@
 <?php
 	namespace Test;
-	
-	/**
-	 * Usage: add runIsolated annotation to either class or a test method.
-	 * If added to class, a single isolated process will be used for all methods.
-	 * 
-	 * NOTE: PHPUnit does a trick of instantiating different objects for every
-	 * method run, presumably for isolation purposes. When the class is run isolated,
-	 * this feature is lost: all methods will be run on a single instance. 
-	 * 
-	 * @author Dinu Marina dinumarina@gmail.com
-	 *
-	 */
+
 	class WithIsolation extends \Codeception\Test\Unit {
-		private static $runners=[];
 		private static $isSetup=[];
 		private static $isIsolated_test=[];
-		private $isolatedName;
+		private static $runners=[];
 		private static $amIsolated=false;
 		
-		/**
-		 * Override this to provide initialisation code for the isolated container 
-		 */
-		function isolationSetup(){}
-		
-		
-		function _before(){
-			parent::_before();
-			$class=get_called_class();
-			if(!array_key_exists($class,self::$isSetup)){
-				self::$isSetup[$class]=true;
-				static::setupOnce();
-			}
+		function isolationSetup(){
 		}
 		
-		protected function runTest(){
-			$class=get_called_class();
-			$wrapper=null;
-			if(self::$isIsolated_test[$class]){
-				$wrapper='runTest_isolated';
-			} 
-			elseif(self::doRunIsolatedTestMethod($class,$this->getName(false))){
-				$wrapper='runTestMethod_isolated';
-			}
-			if($wrapper){
-				/**
-				 * HACK: The parent uses $this->name to decide which method to call;
-				 * It does not seem to use it before doing the actual call, so we
-				 * might just hijack it here to trick it into calling runTest_isolated.
-				 * This might change in the future (parent might decide to use $this->name
-				 * for other purposes), so it's a bit unsafe. Alternative would be
-				 * to copy parent code here, or ask author for a wrapper.
-				 * @see \PHPUnit\Framework\TestCase::runTest()
-				 */
-				$this->isolatedName=$this->getName(false);
-				$this->setName($wrapper);
-			}
-			return parent::runTest();
+		function cc_isolationSetup(){
+			//	setUp initializes $tester in Codeception
+			$this->setUp();
+			$this->isolationSetup();
+			$this->tearDown();
 		}
 		
-		static function tearDownAfterClass(){
-			parent::tearDownAfterClass();
+		function isolationTeardown(){
+		}
+		
+		function cc_isolationTeardown(){
+			//	setUp initializes $tester in Codeception
+			$this->setUp();
+			$this->isolationTeardown();
+			$this->tearDown();
+		}
+		
+		static final function setUpBeforeClass(){
+		}
+
+		static final function tearDownAfterClass(){
 			$class=get_called_class();
 			if(
+				!self::$amIsolated &&
 				self::$isIsolated_test[$class] &&
 				/* HACK: This is called multiple times per class; see
 				 * https://github.com/Codeception/Codeception/issues/5416
@@ -73,23 +44,149 @@
 			}
 		}
 		
+		public function run(\PHPUnit\Framework\TestResult $result = null): \PHPUnit\Framework\TestResult {
+			if(self::$amIsolated){
+				return parent::run($result);
+			}
+			$class=get_called_class();
+			if(!array_key_exists($class,self::$isSetup)){
+				static::setupOnce();
+				self::$isSetup[$class]=true;
+			}
+			if(
+				!self::$isIsolated_test[$class] &&
+				!static::doRunIsolatedTestMethod($class,$this->getName(false))
+			){
+				return parent::run($result);
+			}
+	        if ($result === null) {
+	            $result = $this->createResult();
+	        }
+	        if (!$this instanceof \PHPUnit\Framework\WarningTestCase) {
+	            $this->setTestResultObject($result);
+	            $this->setUseErrorHandlerFromAnnotation();
+	        }
+	
+	        if ($this->useErrorHandler !== null) {
+	            $oldErrorHandlerSetting = $result->getConvertErrorsToExceptions();
+	            $result->convertErrorsToExceptions($this->useErrorHandler);
+	        }
+	
+	        if (
+	        	!$this instanceof \PHPUnit\Framework\WarningTestCase &&
+	            !$this instanceof \PHPUnit\Framework\SkippedTestCase &&
+	            !$this->handleDependencies()
+	        ) {
+	            return $result;
+	        }
+	        $args=[
+	        	'isStrictAboutTestsThatDoNotTestAnything'=>$result->isStrictAboutTestsThatDoNotTestAnything(),
+	        	'isStrictAboutOutputDuringTests'=>$result->isStrictAboutOutputDuringTests(),
+	        	'enforcesTimeLimit'=>$result->enforcesTimeLimit(),
+	        	'isStrictAboutTodoAnnotatedTests'=>$result->isStrictAboutTodoAnnotatedTests(),
+	        	'isStrictAboutResourceUsageDuringSmallTests'=>$result->isStrictAboutResourceUsageDuringSmallTests(),
+	        	'data'=>$this->data(),
+	        	'dataName'=>$this->dataName(),
+	        	'dependencyInput'=>$this->getDependencyInput()
+	        ];
+            if ($result->getCodeCoverage()) {
+            	$args['collectCodeCoverageInformation']=true;
+                $args['codeCoverageFilter'] = $result->getCodeCoverage()->filter();
+            } else {
+            	$args['collectCodeCoverageInformation']=false;
+                $args['codeCoverageFilter'] = null;
+            }
+        	$result->startTest($this);
+			if(!self::$isIsolated_test[$class]){
+				static::startRunner();
+			}
+            $childResult=static::runIsolatedTestMethod($class,$this->getName(false),$args);
+			if(!self::$isIsolated_test[$class]){
+				static::stopRunner();
+			}
+			if (!empty($childResult['output'])) {
+				$output = $childResult['output'];
+			}
+
+			/* @var \PHPUnit\Framework\TestCase $test */
+
+			$this->setResult($childResult['testResult']);
+			$this->addToAssertionCount($childResult['numAssertions']);
+
+			/** @var TestResult $childResult */
+			$childResult = $childResult['result'];
+
+			if ($result->getCollectCodeCoverageInformation()) {
+				$result->getCodeCoverage()->merge(
+					$childResult->getCodeCoverage()
+				);
+			}
+
+			$time           = $childResult->time();
+			$notImplemented = $childResult->notImplemented();
+			$risky          = $childResult->risky();
+			$skipped        = $childResult->skipped();
+			$errors         = $childResult->errors();
+			$warnings       = $childResult->warnings();
+			$failures       = $childResult->failures();
+
+			if (!empty($notImplemented)) {
+				$result->addError(
+					$this,
+					\PHPUnit\Util\PHP\AbstractPhpProcess::getException($notImplemented[0]),
+					$time
+				);
+			} elseif (!empty($risky)) {
+				$result->addError(
+					$this,
+					\PHPUnit\Util\PHP\AbstractPhpProcess::getException($risky[0]),
+					$time
+				);
+			} elseif (!empty($skipped)) {
+				$result->addError(
+					$this,
+					\PHPUnit\Util\PHP\AbstractPhpProcess::getException($skipped[0]),
+					$time
+				);
+			} elseif (!empty($errors)) {
+				$result->addError(
+					$this,
+					\PHPUnit\Util\PHP\AbstractPhpProcess::getException($errors[0]),
+					$time
+				);
+			} elseif (!empty($warnings)) {
+				$result->addWarning(
+					$this,
+					\PHPUnit\Util\PHP\AbstractPhpProcess::getException($warnings[0]),
+					$time
+				);
+			} elseif (!empty($failures)) {
+				$result->addFailure(
+					$this,
+					\PHPUnit\Util\PHP\AbstractPhpProcess::getException($failures[0]),
+					$time
+				);
+			}
+	        $result->endTest($this, $time);
+	
+	        if (!empty($output)) {
+	            print $output;
+	        }
+			
+			if (isset($oldErrorHandlerSetting)) {
+	            $result->convertErrorsToExceptions($oldErrorHandlerSetting);
+	        }
+	        $this->result = null;
+	        return $result;
+		}
+		
 		protected function setupOnce(){
 			$class=get_called_class();
 			self::$isIsolated_test[$class]=self::doRunIsolatedTest($class);
 			if(self::$isIsolated_test[$class]){
 				$this->startRunner();
-				$this->runIsolated('isolationSetup');
+				$this->runIsolated([$class,'cc_isolationSetup']);
 			}
-		}
-		
-		protected function runTest_isolated(){
-			$this->setName($this->isolatedName);
-			$this->runIsolated($this->isolatedName,func_get_args());
-		}
-		
-		protected function runTestMethod_isolated(){
-			$this->setName($this->isolatedName);
-			$this->runIsolatedSingle($this->isolatedName,func_get_args());
 		}
 		
 		protected function startRunner(){
@@ -142,79 +239,6 @@
 			}
 		}
 		
-		protected function runner(){
-			$class=get_called_class();
-			$runner=&self::$runners[$class];
-			do {
-				try {
-					$command_s=file_get_contents($runner['commandPipeFile']);
-					if(!$command_s){
-						break;
-					}
-					$command=unserialize($command_s);
-					$runner['resultPipe']=fopen($runner['resultPipeFile'],'w');
-					switch($command['command']){
-						case 'exit':
-							$result=[
-								'type'=>'ok'
-							];
-							fwrite($runner['resultPipe'],serialize($result));
-							fclose($runner['resultPipe']);
-							break 2;
-						case 'run':
-							$toCall=$command['what'];
-							$res=call_user_func_array([$this,$toCall],$command['args']);
-							$result=[
-								'type'=>'ok',
-								'result'=>$res
-							];
-							break;
-					}
-					fwrite($runner['resultPipe'],serialize($result));
-					fclose($runner['resultPipe']);
-				} catch (\Throwable $t) {
-					$flat=$this->flattenThrowable($t);
-					$result=[
-						'type'=>'exception',
-						'exception'=>$flat
-					];
-					fwrite($runner['resultPipe'],serialize($result));
-					fclose($runner['resultPipe']);
-				}
-			} while(true);
-			/**
-			 * Problem: This triggers Codeception's shutdown handler which tries
-			 * to output some error about an incomplete run.
-			 */
-			die();
-		}
-		
-		public function runMain($callback,...$arguments){
-			if(self::$amIsolated){
-				$class=get_called_class();
-				$runner=&self::$runners[$class];
-				$result=[
-					'type'=>'run',
-					'callback'=>$callback,
-					'arguments'=>$arguments
-				];
-				fwrite($runner['resultPipe'],serialize($result));
-				fclose($runner['resultPipe']);
-				$result_s=file_get_contents($runner['commandPipeFile']);
-				if(!$result_s){
-					die();
-				}
-				$result=unserialize($result_s);
-				if($result['type']!=='ok'){
-					die();
-				}
-				$runner['resultPipe']=fopen($runner['resultPipeFile'],'w');
-				return $result['result'];
-			} else {
-				return $callback(...$arguments);
-			}
-		}
-		
 		protected function runIsolated($callable,$args=[]){
 			$class=get_called_class();
 			if(!array_key_exists($class,self::$runners)){
@@ -248,8 +272,7 @@
 						if(!self::$isIsolated_test[$class]){
 							$this->stopRunner();
 						}
-						$exception=static::unflattenThrowable($result['exception']);
-						throw $exception;
+						throw $result['exception'];
 					case 'ok':
 						return $result['result'];
 					case 'fatal':
@@ -269,12 +292,157 @@
 			} while ( true );
 		}
 		
+		protected function runIsolatedTestMethod($class,$method,$args){
+			$class=get_called_class();
+			if(!array_key_exists($class,self::$runners)){
+				throw new \Codeception\Exception\Fail('A runner is not started');
+			}
+			$runner=&self::$runners[$class];
+			
+			if($runner['isFailed']){
+				throw new \Codeception\Exception\Fail('Runner died with a previous command');
+			}
+			
+			$command=[
+				'command'=>'runTestMethod',
+				'method'=>$method,
+				'args'=>$args
+			];
+			fwrite($runner['commandPipe'],serialize($command));
+			fclose($runner['commandPipe']);
+			do {
+				$result_s=file_get_contents($runner['resultPipeFile']);
+				if(!$result_s){
+					$this->killRunner();
+					throw new \Codeception\Exception\Fail('Could not retrieve runner results');
+				}
+				$result=unserialize($result_s);
+				if($result['type']!=='fatal'){
+					$runner['commandPipe']=fopen($runner['commandPipeFile'],'w');
+				}
+				switch($result['type']){
+					case 'exception':
+						if(!self::$isIsolated_test[$class]){
+							$this->stopRunner();
+						}
+						throw $result['exception'];
+					case 'ok':
+						return $result['result'];
+					case 'fatal':
+						$runner['isFailed']=true;
+						$exception=new \RuntimeException('Fatal error in runner: '.$result['error']['message'].' in '.$result['error']['file'].':'.$result['error']['line']);
+						throw $exception;
+					case 'run':
+						$res=$result['callback'](...$result['arguments']);
+						$return=[
+							'type'=>'ok',
+							'result'=>$res
+						];
+						fwrite($runner['commandPipe'],serialize($return));
+						fclose($runner['commandPipe']);
+						break;
+				}
+			} while ( true );
+		}
+		
+		protected function runner(){
+			$class=get_called_class();
+			$runner=&self::$runners[$class];
+			do {
+				try {
+					$command_s=file_get_contents($runner['commandPipeFile']);
+					if(!$command_s){
+						break;
+					}
+					$command=unserialize($command_s);
+					$runner['resultPipe']=fopen($runner['resultPipeFile'],'w');
+					switch($command['command']){
+						case 'exit':
+							$result=[
+								'type'=>'ok'
+							];
+							fwrite($runner['resultPipe'],serialize($result));
+							fclose($runner['resultPipe']);
+							break 2;
+						case 'run':
+							$toCall=$command['what'];
+							if(
+								is_array($toCall) &&
+								$toCall[0]==$class
+							){
+								$toCall[0]=$this;
+							}
+							$res=call_user_func_array($toCall,$command['args']);
+							$result=[
+								'type'=>'ok',
+								'result'=>$res
+							];
+							break;
+						case 'runTestMethod':
+    						$result = new \PHPUnit\Framework\TestResult;
+						    if ($command['args']['collectCodeCoverageInformation']) {
+						        $result->setCodeCoverage(
+						            new \SebastianBergmann\CodeCoverage\CodeCoverage(
+						                null,
+						                unserialize($command['args']['codeCoverageFilter'])
+						            )
+						        );
+						    }
+						    $result->beStrictAboutTestsThatDoNotTestAnything($command['args']['isStrictAboutTestsThatDoNotTestAnything']);
+						    $result->beStrictAboutOutputDuringTests($command['args']['isStrictAboutOutputDuringTests']);
+						    $result->enforceTimeLimit($command['args']['enforcesTimeLimit']);
+						    $result->beStrictAboutTodoAnnotatedTests($command['args']['isStrictAboutTodoAnnotatedTests']);
+						    $result->beStrictAboutResourceUsageDuringSmallTests($command['args']['isStrictAboutResourceUsageDuringSmallTests']);
+						    $this->setDependencyInput($command['args']['dependencyInput']);
+						    $this->setInIsolation(true);
+						    $this->run($result);
+						    $output = '';
+						    if (!$this->hasExpectationOnOutput()) {
+						        $output = $this->getActualOutput();
+						    }
+						
+							$result=[
+								'type'=>'ok',
+								'result'=>[
+									'testResult'    => $this->getResult(),
+									'numAssertions' => $this->getNumAssertions(),
+									'result'        => $result,
+									'output'        => $output
+								]
+							];
+						    break;
+					}
+					fwrite($runner['resultPipe'],serialize($result));
+					fclose($runner['resultPipe']);
+				} catch (\Throwable $t) {
+					if(!is_a('PHPUnit\Framework\ExceptionWrapper',$t)){
+						$t=new \PHPUnit\Framework\ExceptionWrapper($t);
+					}
+					$result=[
+						'type'=>'exception',
+						'exception'=>$t
+					];
+					fwrite($runner['resultPipe'],serialize($result));
+					fclose($runner['resultPipe']);
+				}
+			} while(true);
+			/**
+			 * Problem: This triggers Codeception's shutdown handler which tries
+			 * to output some error about an incomplete run.
+			 */
+			die();
+		}
+		
 		protected static function stopRunner(){
 			$class=get_called_class();
 			if(!array_key_exists($class,self::$runners)){
 				throw new \Codeception\Exception\Fail('A runner is not started');
 			}
-			$runner=self::$runners[$class];
+			$runner=&self::$runners[$class];
+			
+			if(self::$isIsolated_test[$class]){
+				static::runIsolated([$class,'cc_isolationTeardown']);
+			}
 			
 			$command=[
 				'command'=>'exit'
@@ -296,7 +464,7 @@
 			unlink($runner['resultPipeFile']);
 			unset(self::$runners[$class]);
 		}
-		
+
 		protected static function killRunner(){
 			$class=get_called_class();
 			if(!array_key_exists($class,self::$runners)){
@@ -309,13 +477,32 @@
 			unset(self::$runners[$class]);
 		}
 		
-		protected function runIsolatedSingle($callable,$args=[]){
-			$this->startRunner();
-			$this->runIsolated('isolationSetup');
-			$this->runIsolated($callable,$args);
-			static::stopRunner();
+		public function runMain($callback,...$arguments){
+			if(self::$amIsolated){
+				$class=get_called_class();
+				$runner=&self::$runners[$class];
+				$result=[
+					'type'=>'run',
+					'callback'=>$callback,
+					'arguments'=>$arguments
+				];
+				fwrite($runner['resultPipe'],serialize($result));
+				fclose($runner['resultPipe']);
+				$result_s=file_get_contents($runner['commandPipeFile']);
+				if(!$result_s){
+					die();
+				}
+				$result=unserialize($result_s);
+				if($result['type']!=='ok'){
+					die();
+				}
+				$runner['resultPipe']=fopen($runner['resultPipeFile'],'w');
+				return $result['result'];
+			} else {
+				return $callback(...$arguments);
+			}
 		}
-
+		
 		private static function doRunIsolatedTestMethod($class,$methodName){
 	        $annotations = \PHPUnit\Util\Test::parseTestMethodAnnotations(
 	            $class,
@@ -332,65 +519,25 @@
 	        return isset($annotations['class']['runIsolated']);
 		}
 		
-		private function flattenVar($var){
-			if(is_a($var,'Closure')){
-				$closureReflection = new \ReflectionFunction($value);
-				return sprintf(
-					'(Closure at %s:%s)',
-					$closureReflection->getFileName(),
-					$closureReflection->getStartLine()
-				);
-			}
-			if(is_a($var,'Throwable')){
-				return self::flattenThrowable($var);
-			}
-			if(is_array($var)){
-				foreach($var as &$value){
-					$value=self::flattenVar($value);
-				}
-				unset($value);
-				return $var;
-			}
-			if(is_object($var)){
-				try {
-					serialize($var);
-				} catch (\Throwable $e){
-					return '(Unserializable '.get_class($var).')';
-				}
-			}
-			return $var;
+		function isIsolated(){
+			return self::$amIsolated;
 		}
-		
-		private function unflattenVar($var){
-			if(is_a($var,'Test\FlattenedThrowable')){
-				return self::unflattenThrowable($var);
-			}
-			if(is_array($var)){
-				foreach($var as &$value){
-					$value=self::unflattenVar($value);
-				}
-				unset($value);
-				return $var;
-			}
-			return $var;
-		}
-		
-		/**
-		 * Throwables cannot be serialized if they have callbacks in args. So
-		 * flatten those callbacks.
-		 */
-		private function flattenThrowable($throwable) {
-	        $struct=new FlattenedThrowable;
-			
+	}
+	
+	class FlattenedThrowable extends \PHPUnit\Framework\ExceptionWrapper {
+		public $_s_class;
+		function __construct(\Throwable $throwable){
 			$class=get_class($throwable);
-			$struct->class=$class;
+			$this->_s_class=$class;
 			$refClass=new \ReflectionClass($class);
 			foreach($refClass->getProperties() as $refProperty){
 				$refProperty->setAccessible(true);
 				$value=$refProperty->getValue($throwable);
 				$refProperty->setAccessible(false);
 				$value=self::flattenVar($value);
-				$struct->data[$refProperty->getName()]=$value;
+				$refProperty->setAccessible(true);
+				$value=$refProperty->setValue($this);
+				$refProperty->setAccessible(false);
 			}
 			$privateClass=get_parent_class($class);
 			while($privateClass){
@@ -400,61 +547,31 @@
 					$value=$refProperty->getValue($throwable);
 					$refProperty->setAccessible(false);
 					$value=self::flattenVar($value);
-					$struct->data[$refProperty->getName()]=$value;
+					$refProperty->setAccessible(true);
+					$value=$refProperty->setValue($this);
+					$refProperty->setAccessible(false);
 				}
 				$privateClass=get_parent_class($privateClass);
 			}
-	        return $struct;
-	    }
-	    
-	    private static function unflattenThrowable (FlattenedThrowable $struct){
-	    	$class=$struct->class;
+		}
+		
+		function __toString(): string {
+	    	$class=$this->_s_class;
 	    	do {
 	    		if(class_exists($class)){
 	    			break;
 	    		}
 	    		$class=get_parent_class($class);
 	    	} while ($class);
-	    	if(
-	    		!$class ||
-	    		!is_a($class,'Throwable',true)
-	    	){
-	    		$throwable=new \RuntimeException();
-				$refClass=new \ReflectionClass('RuntimeException');
-	    	} else {
-				$refClass=new \ReflectionClass($class);
-	    		$throwable=$refClass->newInstanceWithoutConstructor();
-	    	}
-			foreach($refClass->getProperties() as $refProperty){
-				$name=$refProperty->getName();
-				$value=$struct->data[$name];
-				$value=self::unflattenVar($value);
-				$refProperty->setAccessible(true);
-				$refProperty->setValue($throwable,$value);
-				$refProperty->setAccessible(false);
-			}
-			$privateClass=get_parent_class($class);
-			while($privateClass){
-				$refPrivateClass=new \ReflectionClass($privateClass);
-				foreach($refPrivateClass->getProperties(\ReflectionProperty::IS_PRIVATE) as $refProperty){
-					$name=$refProperty->getName();
-					$value=$struct->data[$name];
-					$value=self::unflattenVar($value);
-					$refProperty->setAccessible(true);
-					$refProperty->setValue($throwable,$value);
-					$refProperty->setAccessible(false);
-				}
-				$privateClass=get_parent_class($privateClass);
-			}
-	        return $throwable;
+			return $class::__toString();
 		}
 		
-		function isIsolated(){
-			return self::$amIsolated;
+		function getSerializableTrace(): array {
+			return $this->getTrace();
 		}
-	}
-	
-	class FlattenedThrowable{
-		public $class;
-		public $data;
-	}
+		
+	    public function getClassName(): string
+	    {
+	        return $this->_s_class;
+	    }
+	}	
