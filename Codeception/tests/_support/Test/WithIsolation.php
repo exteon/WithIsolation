@@ -185,7 +185,6 @@
 			self::$isIsolated_test[$class]=self::doRunIsolatedTest($class);
 			if(self::$isIsolated_test[$class]){
 				$this->startRunner();
-				$this->runIsolated([$class,'cc_isolationSetup']);
 			}
 		}
 		
@@ -237,6 +236,7 @@
 				$runner['started']=true;
 				$runner['commandPipe']=fopen($runner['commandPipeFile'],'w');
 			}
+			$this->runIsolated([$class,'cc_isolationSetup']);
 		}
 		
 		protected function runIsolated($callable,$args=[]){
