@@ -20,7 +20,7 @@ will only run on Linux.
 
 ### Codeception
 
-- Apply the codeception.patch patch to the Codeception root dir
+- Apply the `codeception.patch` patch to the Codeception root dir
 - Copy the test case class `WithIsolation.php` into the `tests/_support/Test`
 directory of your testing environment.
 - Rewrite your existing test cases (in tests/unit or where your unit test 
