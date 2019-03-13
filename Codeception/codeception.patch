@@ -1,0 +1,55 @@
+# HG changeset patch
+# User dinu.marina
+# Date 1552447351 -7200
+#      Wed Mar 13 05:22:31 2019 +0200
+# Branch stabilisation
+# Node ID 79d297e2329efd936b6a74460787a6db514c1776
+# Parent  fdbb999a3b3bc070d62d9471e3ce09b74b985113
+testing
+
+diff -r fdbb999a3b3b -r 79d297e2329e vendor/phpunit/phpunit/src/Framework/TestCase.php
+--- a/vendor/phpunit/phpunit/src/Framework/TestCase.php	Tue Mar 12 04:37:37 2019 +0200
++++ b/vendor/phpunit/phpunit/src/Framework/TestCase.php	Wed Mar 13 05:22:31 2019 +0200
+@@ -963,6 +963,10 @@
+         return \count($this->dependencies) > 0;
+     }
+ 
++    public function getDependencyInput() {
++    	return $this->dependencyInput; 
++    }
++    
+     public function setDependencyInput(array $dependencyInput): void
+     {
+         $this->dependencyInput = $dependencyInput;
+@@ -1079,6 +1083,10 @@
+         return \is_string($this->dataName) ? $this->dataName : '';
+     }
+ 
++    public function data(){
++    	return $this->data;
++    }
++
+     /**
+      * @return int|string
+      */
+@@ -1615,7 +1623,7 @@
+         }
+     }
+ 
+-    private function setUseErrorHandlerFromAnnotation(): void
++    protected function setUseErrorHandlerFromAnnotation(): void
+     {
+         try {
+             $useErrorHandler = \PHPUnit\Util\Test::getErrorHandlerSettings(
+diff -r fdbb999a3b3b -r 79d297e2329e vendor/phpunit/phpunit/src/Util/PHP/AbstractPhpProcess.php
+--- a/vendor/phpunit/phpunit/src/Util/PHP/AbstractPhpProcess.php	Tue Mar 12 04:37:37 2019 +0200
++++ b/vendor/phpunit/phpunit/src/Util/PHP/AbstractPhpProcess.php	Wed Mar 13 05:22:31 2019 +0200
+@@ -338,7 +338,7 @@
+      *
+      * @see https://github.com/sebastianbergmann/phpunit/issues/74
+      */
+-    private function getException(TestFailure $error): Exception
++    public static function getException(TestFailure $error): Exception
+     {
+         $exception = $error->thrownException();
+ 
