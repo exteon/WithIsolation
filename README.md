@@ -20,6 +20,7 @@ will only run on Linux.
 
 ### Codeception
 
+- Apply the `codeception.patch` patch to the Codeception root dir
 - Copy the test case class `WithIsolation.php` into the `tests/_support/Test`
 directory of your testing environment.
 - Rewrite your existing test cases (in tests/unit or where your unit test 
@@ -53,6 +54,11 @@ case class or to the test methods (function test*):
 - Implement the `isolationSetup()` function if needed: this function is run in
 the spawned process before the test function(s), so you can initialize the 
 isolated process state in this function.
+- Implement the `isolationTeardown()` function if needed: this function is run in
+the spawned process before the test function(s), so you can initialize the 
+isolated process state in this function.
+- `setUpBeforeClass` and `tearDownBeforeClass` PHPUnit methods are disabled, use 
+the ones above instead.
   
 ## Notes
 
@@ -62,8 +68,7 @@ before or during running of the script will get run when the process exits.
 
 For example, codeception's finish handlers get called which display a notice 
 that all test did not run (in the spawned process). This output is, however,
-generally hidden and you won't see it in the run results. There are a few 
-circumstances where this can perspire, we're not sure yet which.
+generally hidden and you won't see it in the run results. 
 
 If you are using Xdebug (even having it enabled), you will get "broken pipe"
 notifications before Xdebug 2.7 and debugging is unreliable with forking. This
